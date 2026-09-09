@@ -1,0 +1,10 @@
+{
+  "policyVersion": "1.0.0",
+  "allowedExceptions": [],
+  "platformImplementationPrefixes": [
+    "Sources/UIKitAdapter/",
+    "Sources/AppKitAdapter/",
+    "Sources/AppleRendering/",
+    "Sources/Weave/Platform/"
+  ]
+}

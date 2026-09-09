@@ -1,0 +1,546 @@
+{
+  "module": "Weave",
+  "platform": "arm64-apple-macosx14.0",
+  "schemaVersion": 1,
+  "symbols": [
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor final class AppRuntime<App> where App : Application",
+      "identifier": "s:5Weave10AppRuntimeC",
+      "kind": "swift.class",
+      "pathComponents": [
+        "AppRuntime"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor init(application: App, failurePolicy: ApplicationStartupFailurePolicy = .failFast)",
+      "identifier": "s:5Weave10AppRuntimeC11application13failurePolicyACyxGx_AA025ApplicationStartupFailureF0Otcfc",
+      "kind": "swift.init",
+      "pathComponents": [
+        "AppRuntime",
+        "init(application:failurePolicy:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor let application: App",
+      "identifier": "s:5Weave10AppRuntimeC11applicationxvp",
+      "kind": "swift.property",
+      "pathComponents": [
+        "AppRuntime",
+        "application"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor let failurePolicy: ApplicationStartupFailurePolicy",
+      "identifier": "s:5Weave10AppRuntimeC13failurePolicyAA025ApplicationStartupFailureE0Ovp",
+      "kind": "swift.property",
+      "pathComponents": [
+        "AppRuntime",
+        "failurePolicy"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor func stop()",
+      "identifier": "s:5Weave10AppRuntimeC4stopyyF",
+      "kind": "swift.method",
+      "pathComponents": [
+        "AppRuntime",
+        "stop()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor func start() async throws -> ApplicationStartReport",
+      "identifier": "s:5Weave10AppRuntimeC5startAA22ApplicationStartReportVyYaKF",
+      "kind": "swift.method",
+      "pathComponents": [
+        "AppRuntime",
+        "start()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor var scenes: [SceneID : WindowScene] { get }",
+      "identifier": "s:5Weave10AppRuntimeC6scenesSDy0A2UI7SceneIDVAE06WindowF0CGvp",
+      "kind": "swift.property",
+      "pathComponents": [
+        "AppRuntime",
+        "scenes"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor var isStarted: Bool { get }",
+      "identifier": "s:5Weave10AppRuntimeC9isStartedSbvp",
+      "kind": "swift.property",
+      "pathComponents": [
+        "AppRuntime",
+        "isStarted"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@discardableResult @MainActor func startSync() throws -> ApplicationStartReport",
+      "identifier": "s:5Weave10AppRuntimeC9startSyncAA22ApplicationStartReportVyKF",
+      "kind": "swift.method",
+      "pathComponents": [
+        "AppRuntime",
+        "startSync()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "protocol Application : Sendable",
+      "identifier": "s:5Weave11ApplicationP",
+      "kind": "swift.protocol",
+      "pathComponents": [
+        "Application"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "associatedtype Content : ApplicationContent",
+      "identifier": "s:5Weave11ApplicationP7ContentQa",
+      "kind": "swift.associatedtype",
+      "pathComponents": [
+        "Application",
+        "Content"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor @ApplicationBuilder func compose() -> Self.Content",
+      "identifier": "s:5Weave11ApplicationP7compose7ContentQzyF",
+      "kind": "swift.method",
+      "pathComponents": [
+        "Application",
+        "compose()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor static func main()",
+      "identifier": "s:5Weave11ApplicationPAAE4mainyyFZ",
+      "kind": "swift.type.method",
+      "pathComponents": [
+        "Application",
+        "main()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "init()",
+      "identifier": "s:5Weave11ApplicationPxycfc",
+      "kind": "swift.init",
+      "pathComponents": [
+        "Application",
+        "init()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "struct SceneDescription",
+      "identifier": "s:5Weave16SceneDescriptionV",
+      "kind": "swift.struct",
+      "pathComponents": [
+        "SceneDescription"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "let syncFactory: (@MainActor @Sendable () throws -> WindowScene)?",
+      "identifier": "s:5Weave16SceneDescriptionV11syncFactory0A2UI06WindowB0CyYbKScMYccSgvp",
+      "kind": "swift.property",
+      "pathComponents": [
+        "SceneDescription",
+        "syncFactory"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "let id: SceneID",
+      "identifier": "s:5Weave16SceneDescriptionV2id0A2UI0B2IDVvp",
+      "kind": "swift.property",
+      "pathComponents": [
+        "SceneDescription",
+        "id"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "init(id: SceneID, syncFactory: @escaping @MainActor @Sendable () throws -> WindowScene)",
+      "identifier": "s:5Weave16SceneDescriptionV2id11syncFactoryAC0A2UI0B2IDV_AF06WindowB0CyYbKScMYcctcfc",
+      "kind": "swift.init",
+      "pathComponents": [
+        "SceneDescription",
+        "init(id:syncFactory:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "init(id: SceneID, factory: @escaping @MainActor @Sendable () async throws -> WindowScene)",
+      "identifier": "s:5Weave16SceneDescriptionV2id7factoryAC0A2UI0B2IDV_AF06WindowB0CyYaYbKScMYcctcfc",
+      "kind": "swift.init",
+      "pathComponents": [
+        "SceneDescription",
+        "init(id:factory:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "struct ApplicationScenes",
+      "identifier": "s:5Weave17ApplicationScenesV",
+      "kind": "swift.struct",
+      "pathComponents": [
+        "ApplicationScenes"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "init(scenes: [SceneDescription])",
+      "identifier": "s:5Weave17ApplicationScenesV6scenesACSayAA16SceneDescriptionVG_tcfc",
+      "kind": "swift.init",
+      "pathComponents": [
+        "ApplicationScenes",
+        "init(scenes:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "let scenes: [SceneDescription]",
+      "identifier": "s:5Weave17ApplicationScenesV6scenesSayAA16SceneDescriptionVGvp",
+      "kind": "swift.property",
+      "pathComponents": [
+        "ApplicationScenes",
+        "scenes"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@resultBuilder enum ApplicationBuilder",
+      "identifier": "s:5Weave18ApplicationBuilderO",
+      "kind": "swift.enum",
+      "pathComponents": [
+        "ApplicationBuilder"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "static func buildBlock(_ components: ApplicationScenes...) -> ApplicationScenes",
+      "identifier": "s:5Weave18ApplicationBuilderO10buildBlockyAA0B6ScenesVAFd_tFZ",
+      "kind": "swift.type.method",
+      "pathComponents": [
+        "ApplicationBuilder",
+        "buildBlock(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "static func buildEither(first component: ApplicationScenes) -> ApplicationScenes",
+      "identifier": "s:5Weave18ApplicationBuilderO11buildEither5firstAA0B6ScenesVAG_tFZ",
+      "kind": "swift.type.method",
+      "pathComponents": [
+        "ApplicationBuilder",
+        "buildEither(first:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "static func buildEither(second component: ApplicationScenes) -> ApplicationScenes",
+      "identifier": "s:5Weave18ApplicationBuilderO11buildEither6secondAA0B6ScenesVAG_tFZ",
+      "kind": "swift.type.method",
+      "pathComponents": [
+        "ApplicationBuilder",
+        "buildEither(second:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "static func buildOptional(_ component: ApplicationScenes?) -> ApplicationScenes",
+      "identifier": "s:5Weave18ApplicationBuilderO13buildOptionalyAA0B6ScenesVAFSgFZ",
+      "kind": "swift.type.method",
+      "pathComponents": [
+        "ApplicationBuilder",
+        "buildOptional(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "static func buildExpression(_ component: SceneDescription) -> ApplicationScenes",
+      "identifier": "s:5Weave18ApplicationBuilderO15buildExpressionyAA0B6ScenesVAA16SceneDescriptionVFZ",
+      "kind": "swift.type.method",
+      "pathComponents": [
+        "ApplicationBuilder",
+        "buildExpression(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "static func buildExpression(_ component: ApplicationScenes) -> ApplicationScenes",
+      "identifier": "s:5Weave18ApplicationBuilderO15buildExpressionyAA0B6ScenesVAFFZ",
+      "kind": "swift.type.method",
+      "pathComponents": [
+        "ApplicationBuilder",
+        "buildExpression(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "protocol ApplicationContent : Sendable",
+      "identifier": "s:5Weave18ApplicationContentP",
+      "kind": "swift.protocol",
+      "pathComponents": [
+        "ApplicationContent"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "var scenes: [SceneDescription] { get }",
+      "identifier": "s:5Weave18ApplicationContentP6scenesSayAA16SceneDescriptionVGvp",
+      "kind": "swift.property",
+      "pathComponents": [
+        "ApplicationContent",
+        "scenes"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor struct ApplicationStartReport",
+      "identifier": "s:5Weave22ApplicationStartReportV",
+      "kind": "swift.struct",
+      "pathComponents": [
+        "ApplicationStartReport"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor init(scenes: [WindowScene], failures: [ApplicationRuntimeError])",
+      "identifier": "s:5Weave22ApplicationStartReportV6scenes8failuresACSay0A2UI11WindowSceneCG_SayAA0B12RuntimeErrorOGtcfc",
+      "kind": "swift.init",
+      "pathComponents": [
+        "ApplicationStartReport",
+        "init(scenes:failures:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor let scenes: [WindowScene]",
+      "identifier": "s:5Weave22ApplicationStartReportV6scenesSay0A2UI11WindowSceneCGvp",
+      "kind": "swift.property",
+      "pathComponents": [
+        "ApplicationStartReport",
+        "scenes"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor let failures: [ApplicationRuntimeError]",
+      "identifier": "s:5Weave22ApplicationStartReportV8failuresSayAA0B12RuntimeErrorOGvp",
+      "kind": "swift.property",
+      "pathComponents": [
+        "ApplicationStartReport",
+        "failures"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "enum ApplicationRuntimeError",
+      "identifier": "s:5Weave23ApplicationRuntimeErrorO",
+      "kind": "swift.enum",
+      "pathComponents": [
+        "ApplicationRuntimeError"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "case sceneFailed(SceneID, String)",
+      "identifier": "s:5Weave23ApplicationRuntimeErrorO11sceneFailedyAC0A2UI7SceneIDV_SStcACmF",
+      "kind": "swift.enum.case",
+      "pathComponents": [
+        "ApplicationRuntimeError",
+        "sceneFailed(_:_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "case alreadyStarted",
+      "identifier": "s:5Weave23ApplicationRuntimeErrorO14alreadyStartedyA2CmF",
+      "kind": "swift.enum.case",
+      "pathComponents": [
+        "ApplicationRuntimeError",
+        "alreadyStarted"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "case duplicateScene(SceneID)",
+      "identifier": "s:5Weave23ApplicationRuntimeErrorO14duplicateSceneyAC0A2UI0F2IDVcACmF",
+      "kind": "swift.enum.case",
+      "pathComponents": [
+        "ApplicationRuntimeError",
+        "duplicateScene(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "enum ApplicationStartupFailurePolicy",
+      "identifier": "s:5Weave31ApplicationStartupFailurePolicyO",
+      "kind": "swift.enum",
+      "pathComponents": [
+        "ApplicationStartupFailurePolicy"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "case continueLaunching",
+      "identifier": "s:5Weave31ApplicationStartupFailurePolicyO17continueLaunchingyA2CmF",
+      "kind": "swift.enum.case",
+      "pathComponents": [
+        "ApplicationStartupFailurePolicy",
+        "continueLaunching"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "case failFast",
+      "identifier": "s:5Weave31ApplicationStartupFailurePolicyO8failFastyA2CmF",
+      "kind": "swift.enum.case",
+      "pathComponents": [
+        "ApplicationStartupFailurePolicy",
+        "failFast"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor func Scene(_ id: String, factory: @escaping @MainActor @Sendable () async throws -> WindowScene) -> SceneDescription",
+      "identifier": "s:5Weave5Scene_7factoryAA0B11DescriptionVSS_0A2UI06WindowB0CyYaYbKScMYcctF",
+      "kind": "swift.func",
+      "pathComponents": [
+        "Scene(_:factory:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "@MainActor func Scene(_ id: String, factory: @escaping @MainActor @Sendable () throws -> WindowScene) -> SceneDescription",
+      "identifier": "s:5Weave5Scene_7factoryAA0B11DescriptionVSS_0A2UI06WindowB0CyYbKScMYcctF",
+      "kind": "swift.func",
+      "pathComponents": [
+        "Scene(_:factory:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "static func != (lhs: Self, rhs: Self) -> Bool",
+      "identifier": "s:SQsE2neoiySbx_xtFZ::SYNTHESIZED::s:5Weave23ApplicationRuntimeErrorO",
+      "kind": "swift.func.op",
+      "pathComponents": [
+        "ApplicationRuntimeError",
+        "!=(_:_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [],
+      "declaration": "static func != (lhs: Self, rhs: Self) -> Bool",
+      "identifier": "s:SQsE2neoiySbx_xtFZ::SYNTHESIZED::s:5Weave31ApplicationStartupFailurePolicyO",
+      "kind": "swift.func.op",
+      "pathComponents": [
+        "ApplicationStartupFailurePolicy",
+        "!=(_:_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 10,
+            "minor": 10
+          }
+        },
+        {
+          "domain": "watchOS",
+          "introduced": {
+            "major": 2,
+            "minor": 0
+          }
+        },
+        {
+          "domain": "iOS",
+          "introduced": {
+            "major": 8,
+            "minor": 0
+          }
+        },
+        {
+          "domain": "tvOS",
+          "introduced": {
+            "major": 9,
+            "minor": 0
+          }
+        }
+      ],
+      "declaration": "var localizedDescription: String { get }",
+      "identifier": "s:s5ErrorP10FoundationE20localizedDescriptionSSvp::SYNTHESIZED::s:5Weave23ApplicationRuntimeErrorO",
+      "kind": "swift.property",
+      "pathComponents": [
+        "ApplicationRuntimeError",
+        "localizedDescription"
+      ]
+    }
+  ],
+  "toolchain": {
+    "sdk": "26.5",
+    "swift": "6.3.3"
+  }
+}
