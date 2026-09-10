@@ -183,8 +183,171 @@
         }
 
         #if DEBUG
-            hostView.emitInputForTesting(.scroll(deltaX: 0, deltaY: -45))
+            hostView.emitInputForTesting(
+                .scroll(point: CGPoint(x: 100, y: 100), deltaX: 0, deltaY: -45, phase: .began))
             #expect(scroll.state.offset.y == 45)
+        #endif
+
+        host.unmount()
+    }
+
+    /// Card 03: before this, `AppKitWindowHost` (like `UIKitWindowHost`) always routed a scroll
+    /// to whichever `ScrollNode` a single whole-tree DFS from the root found first — never the
+    /// one actually under the pointer. This builds a horizontal row nested in a vertical list and
+    /// confirms a horizontal scroll at a point inside the row reaches the row, not the outer list.
+    @MainActor
+    private func makeNestedScrollFixture() -> (
+        outer: ScrollNode, inner: ScrollNode, host: AppKitWindowHost, hostView: AppKitHostView?
+    ) {
+        let outer = ScrollNode(axis: .vertical)
+        let inner = ScrollNode(axis: .horizontal)
+        outer.addSubnode(inner)
+        outer.updateViewport(
+            viewportSize: MeasuredSize(width: 300, height: 300),
+            contentSize: MeasuredSize(width: 300, height: 1000)
+        )
+        inner.updateViewport(
+            viewportSize: MeasuredSize(width: 300, height: 100),
+            contentSize: MeasuredSize(width: 1000, height: 100)
+        )
+
+        let controller = Controller<ScrollNode, Never, Never>(node: outer)
+        let logicalWindow = Window(rootController: controller)
+        let nativeWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: true
+        )
+        let host = AppKitWindowHost(window: logicalWindow, nativeWindow: nativeWindow)
+        _ = host.mount()
+
+        let placements = [
+            LayoutPlacement(
+                identity: outer.id,
+                frame: LayoutFrame(origin: LayoutPoint(x: 0, y: 0), width: 300, height: 300)),
+            LayoutPlacement(
+                identity: inner.id,
+                frame: LayoutFrame(origin: LayoutPoint(x: 0, y: 0), width: 300, height: 100)),
+        ]
+        outer.applyRecursively(
+            LayoutResult(
+                placements: placements, treeIdentity: outer.id, environmentRevision: 1,
+                contentRevision: 1))
+
+        let hostView =
+            nativeWindow.contentView?.subviews.first(where: { $0 is AppKitHostView })
+            as? AppKitHostView
+        return (outer, inner, host, hostView)
+    }
+
+    @Test
+    @MainActor
+    func appKitWindowHostRoutesHorizontalScrollToNestedRowNotOuterList() {
+        let (outer, inner, host, hostView) = makeNestedScrollFixture()
+        guard let hostView else {
+            #expect(Bool(false), "AppKitHostView must be mounted")
+            return
+        }
+
+        #if DEBUG
+            hostView.emitInputForTesting(
+                .scroll(point: CGPoint(x: 50, y: 50), deltaX: -30, deltaY: 0, phase: .began))
+            #expect(inner.state.offset.x == 30)
+            #expect(outer.state.offset.y == 0)
+        #endif
+
+        host.unmount()
+    }
+
+    @Test
+    @MainActor
+    func appKitWindowHostRoutesVerticalScrollToOuterListOverNestedRow() {
+        let (outer, inner, host, hostView) = makeNestedScrollFixture()
+        guard let hostView else {
+            #expect(Bool(false), "AppKitHostView must be mounted")
+            return
+        }
+
+        #if DEBUG
+            hostView.emitInputForTesting(
+                .scroll(point: CGPoint(x: 50, y: 50), deltaX: 0, deltaY: -60, phase: .began))
+            #expect(outer.state.offset.y == 60)
+            #expect(inner.state.offset.x == 0)
+        #endif
+
+        host.unmount()
+    }
+
+    /// Regression for a real bug found running the card 08 demo app: `scrollCandidates`'s
+    /// fallback to a naive whole-tree `findScrollNode` — meant only for gestures arriving before
+    /// the very first layout pass — was firing for *any* point with no `ScrollNode` ancestor, even
+    /// after real layout. A click on non-scrollable chrome (a tab bar, here a plain sibling above
+    /// a real scrollable list) would silently claim and move an unrelated scroll node elsewhere in
+    /// the tree, and — worse, in the real UIKit path this mirrors — cancel a pending control press
+    /// on the very thing the user clicked. This asserts a drag starting outside every ScrollNode,
+    /// after a real layout pass, moves nothing.
+    @Test
+    @MainActor
+    func appKitWindowHostDoesNotStealScrollForPointOutsideAnyScrollNodeAfterRealLayout() {
+        let chrome = Node().style {
+            $0.width = .fraction(1)
+            $0.height = .points(60)
+        }
+        let list = ScrollNode(axis: .vertical)
+        list.updateViewport(
+            viewportSize: MeasuredSize(width: 300, height: 240),
+            contentSize: MeasuredSize(width: 300, height: 2000)
+        )
+        let root = Node().style {
+            $0.flexDirection = .column
+            $0.width = .fraction(1)
+            $0.height = .fraction(1)
+        }
+        root.addSubnode(chrome)
+        root.addSubnode(list)
+
+        let controller = Controller<Node, Never, Never>(node: root)
+        let logicalWindow = Window(rootController: controller)
+        let nativeWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: true
+        )
+        let host = AppKitWindowHost(window: logicalWindow, nativeWindow: nativeWindow)
+        #expect(host.mount())
+
+        let placements = [
+            LayoutPlacement(
+                identity: root.id,
+                frame: LayoutFrame(origin: LayoutPoint(x: 0, y: 0), width: 300, height: 300)),
+            LayoutPlacement(
+                identity: chrome.id,
+                frame: LayoutFrame(origin: LayoutPoint(x: 0, y: 0), width: 300, height: 60)),
+            LayoutPlacement(
+                identity: list.id,
+                frame: LayoutFrame(origin: LayoutPoint(x: 0, y: 60), width: 300, height: 240)),
+        ]
+        root.applyRecursively(
+            LayoutResult(
+                placements: placements, treeIdentity: root.id, environmentRevision: 1,
+                contentRevision: 1))
+
+        guard
+            let hostView = nativeWindow.contentView?.subviews.first(where: { $0 is AppKitHostView }
+            ) as? AppKitHostView
+        else {
+            #expect(Bool(false), "AppKitHostView must be mounted")
+            return
+        }
+
+        #if DEBUG
+            // A click-drag squarely inside `chrome` (y: 0..<60), well outside `list` (y: 60..<300).
+            hostView.emitInputForTesting(.mouseDown(point: CGPoint(x: 50, y: 30)))
+            hostView.emitInputForTesting(.mouseDragged(point: CGPoint(x: 50, y: 10)))
+            hostView.emitInputForTesting(.mouseUp(point: CGPoint(x: 50, y: 10)))
+            #expect(list.state.offset == LayoutPoint(x: 0, y: 0))
         #endif
 
         host.unmount()

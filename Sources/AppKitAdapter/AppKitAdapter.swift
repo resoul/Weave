@@ -7,6 +7,19 @@
     import WeaveUI
     import WeaveAdapters
 
+    /// Boundary of one scroll-wheel/trackpad gesture, derived from `NSEvent.phase` and
+    /// `.momentumPhase`. A gesture with no phase information at all (a plain mouse wheel) never
+    /// reports `.began` — callers that see `.changed` with no active gesture treat it as an
+    /// implicit begin.
+    /// Ownership: an immutable value. Isolation: none. Errors: none. Cancellation: `.cancelled` is distinct from `.ended` so a caller can tell a system interruption from a normal finish.
+    public enum AppKitScrollPhase: Sendable, Hashable {
+        case began
+        case changed
+        case momentum
+        case ended
+        case cancelled
+    }
+
     /// Platform-neutral raw input emitted by the AppKit boundary.
     /// Ownership: the value owns copied input data. Isolation: none. Errors: unsupported native
     /// details are omitted. Cancellation: interruption is represented by `cancelled`.
@@ -14,7 +27,7 @@
         case mouseDown(point: CGPoint)
         case mouseDragged(point: CGPoint)
         case mouseUp(point: CGPoint)
-        case scroll(deltaX: Double, deltaY: Double)
+        case scroll(point: CGPoint, deltaX: Double, deltaY: Double, phase: AppKitScrollPhase)
         case keyDown(keyCode: UInt16, characters: String?)
         case cancelled
     }
@@ -267,7 +280,29 @@
         }
 
         public override func scrollWheel(with event: NSEvent) {
-            inputHandler?(.scroll(deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY))
+            let point = convert(event.locationInWindow, from: nil)
+            let phase: AppKitScrollPhase
+            if event.momentumPhase.contains(.began) || event.momentumPhase.contains(.changed) {
+                phase = .momentum
+            } else if event.momentumPhase.contains(.ended)
+                || event.momentumPhase.contains(.cancelled)
+            {
+                phase = .ended
+            } else if event.phase.contains(.began) {
+                phase = .began
+            } else if event.phase.contains(.cancelled) {
+                phase = .cancelled
+            } else if event.phase.contains(.ended) {
+                phase = .ended
+            } else {
+                // A plain (non-trackpad) mouse wheel reports no phase at all; the window host
+                // treats a `.changed` with no active gesture as an implicit begin.
+                phase = .changed
+            }
+            inputHandler?(
+                .scroll(
+                    point: point, deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY,
+                    phase: phase))
         }
 
         public override func keyDown(with event: NSEvent) {
@@ -524,6 +559,13 @@
             controller.view = container
             var lastPointer: CGPoint?
             var edgePullActive = false
+            // Two independent gesture sources — click-drag and scroll-wheel/trackpad — never
+            // overlap in practice, but each gets its own tracker so one never observes the
+            // other's arbitration state. Edge-pull keeps using the pre-existing single-node
+            // `findScrollNode` lookup below; nested-claim interaction with edge-pull is
+            // explicitly out of scope for card 03 (see Tasks/03-nested-scroll-arbitration.md).
+            let dragTracker = NestedScrollGestureTracker()
+            let wheelTracker = NestedScrollGestureTracker()
             let host = adapter.makeHost(
                 for: node,
                 coordinator: coordinator,
@@ -534,6 +576,11 @@
                     case let .mouseDown(point):
                         lastPointer = point
                         edgePullActive = false
+                        dragTracker.begin(
+                            candidates: Self.scrollCandidates(
+                                in: node, at: LayoutPoint(x: Double(point.x), y: Double(point.y))),
+                            targetsControl: false
+                        )
                     case let .mouseDragged(point):
                         guard let previousPointer = lastPointer else { return }
                         let dy = Double(previousPointer.y - point.y)
@@ -550,9 +597,7 @@
                                 return
                             }
                         }
-                        if let scroll = Self.findScrollNode(in: node) {
-                            _ = scroll.moveBy(x: 0, y: dy)
-                        }
+                        _ = dragTracker.move(dx: 0, dy: dy)
                         lastPointer = point
                     case .mouseUp:
                         if edgePullActive,
@@ -561,10 +606,30 @@
                             edgePull.finishEdgePull()
                         }
                         edgePullActive = false
+                        dragTracker.end()
                         lastPointer = nil
-                    case let .scroll(deltaX, deltaY):
-                        if let scroll = Self.findScrollNode(in: node) {
-                            _ = scroll.moveBy(x: -deltaX, y: -deltaY)
+                    case let .scroll(point, deltaX, deltaY, phase):
+                        switch phase {
+                        case .began:
+                            wheelTracker.begin(
+                                candidates: Self.scrollCandidates(
+                                    in: node,
+                                    at: LayoutPoint(x: Double(point.x), y: Double(point.y))),
+                                targetsControl: false
+                            )
+                            _ = wheelTracker.move(dx: -deltaX, dy: -deltaY)
+                        case .changed, .momentum:
+                            if !wheelTracker.isActive {
+                                wheelTracker.begin(
+                                    candidates: Self.scrollCandidates(
+                                        in: node,
+                                        at: LayoutPoint(x: Double(point.x), y: Double(point.y))),
+                                    targetsControl: false
+                                )
+                            }
+                            _ = wheelTracker.move(dx: -deltaX, dy: -deltaY)
+                        case .ended, .cancelled:
+                            wheelTracker.end()
                         }
                     case .cancelled:
                         if edgePullActive,
@@ -573,6 +638,8 @@
                             edgePull.cancelEdgePull()
                         }
                         edgePullActive = false
+                        dragTracker.cancel()
+                        wheelTracker.cancel()
                         lastPointer = nil
                     default:
                         break
@@ -614,6 +681,25 @@
                 if let found = findScrollNode(in: child) { return found }
             }
             return nil
+        }
+
+        /// Nested-scroll arbitration candidates at `point`, innermost first. Falls back to the
+        /// single whole-tree `findScrollNode(in:)` lookup when hit-testing finds nothing — most
+        /// commonly because the tree hasn't completed its first (async) layout pass yet and no
+        /// node has a `calculatedFrame`. Without this fallback a gesture that starts before the
+        /// first layout pass finishes would silently scroll nothing.
+        private static func scrollCandidates(in node: Node, at point: LayoutPoint) -> [ScrollNode] {
+            let hitTested = NestedScrollArbiter.scrollAncestors(in: node, at: point)
+            guard hitTested.isEmpty else { return hitTested }
+            // An empty result is the *correct* answer for a pointer event that's legitimately
+            // outside every ScrollNode (e.g. a click on a tab bar) — falling back there would let
+            // an unrelated, possibly-scrollable node steal the gesture based on tree order alone,
+            // nothing to do with where the pointer actually was. Only fall back when the tree
+            // hasn't had its first real layout pass at all yet (`node`, the root, has no frame),
+            // which is the specific case this fallback exists for: a gesture arriving before
+            // `calculatedFrame` exists anywhere, so hit-testing can't answer honestly either way.
+            guard node.calculatedFrame == nil else { return [] }
+            return [findScrollNode(in: node)].compactMap { $0 }
         }
 
         /// Unmounts the native root while retaining the logical window for later remount.

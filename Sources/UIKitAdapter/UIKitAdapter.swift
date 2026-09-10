@@ -509,6 +509,12 @@
             var lastTouchPoint: CGPoint?
             var edgePullActive = false
             var pressedControl: (any ControlInputTarget)?
+            // Owns nested-scroll arbitration for this touch sequence: which ScrollNode ancestor
+            // of the touch-down point (innermost first) claims the drag, sticky for the rest of
+            // the gesture. Edge-pull keeps using the pre-existing single-node `findScrollNode`
+            // lookup below — nested-claim interaction with edge-pull is explicitly out of scope
+            // for card 03 (see Tasks/03-nested-scroll-arbitration.md).
+            let scrollTracker = NestedScrollGestureTracker()
             let host = adapter.makeHost(
                 for: node,
                 coordinator: coordinator,
@@ -522,9 +528,14 @@
                         self.lastScrollTimestamp = CACurrentMediaTime()
                         edgePullActive = false
                         lastTouchPoint = point
-                        pressedControl = Self.findControlTarget(
-                            in: node, at: LayoutPoint(x: Double(point.x), y: Double(point.y)))
+                        let layoutPoint = LayoutPoint(x: Double(point.x), y: Double(point.y))
+                        pressedControl = Self.findControlTarget(in: node, at: layoutPoint)
                         _ = pressedControl?.handle(.pointerDown)
+                        scrollTracker.begin(
+                            candidates: Self.scrollCandidates(
+                                in: node, at: layoutPoint),
+                            targetsControl: pressedControl != nil
+                        )
                     case let .touchMoved(point):
                         if let last = lastTouchPoint {
                             let dx = Double(last.x - point.x)
@@ -542,8 +553,13 @@
                                     return
                                 }
                             }
-                            if let scroll = Self.findScrollNode(in: node) {
-                                _ = scroll.moveBy(x: dx, y: dy)
+                            let wasClaimed = scrollTracker.claimedScrollNode != nil
+                            let claimed = scrollTracker.move(dx: dx, dy: dy)
+                            if claimed != nil, !wasClaimed, pressedControl != nil {
+                                // Scrolling just claimed this gesture — the pending press can
+                                // never activate on release.
+                                _ = pressedControl?.handle(.cancelled)
+                                pressedControl = nil
                             }
                             let now = CACurrentMediaTime()
                             if let previous = self.lastScrollTimestamp {
@@ -565,6 +581,7 @@
                             edgePullActive = false
                             self.lastScrollTimestamp = nil
                             lastTouchPoint = nil
+                            scrollTracker.end()
                             _ = control?.handle(.cancelled)
                             return
                         }
@@ -574,10 +591,13 @@
                             let inside = (hitAtRelease as AnyObject?) === (control as AnyObject)
                             _ = control.handle(.pointerUp(inside: inside))
                         }
-                        if let scroll = Self.findScrollNode(in: node) {
+                        // Momentum continues on whichever node this drag claimed, not a fresh
+                        // whole-tree lookup — the claim holds through the momentum phase.
+                        if let scroll = scrollTracker.claimedScrollNode {
                             self.startScrollDeceleration(
                                 scroll: scroll, velocityY: self.scrollVelocityY)
                         }
+                        scrollTracker.end()
                         self.lastScrollTimestamp = nil
                         lastTouchPoint = nil
                     case .cancelled:
@@ -589,6 +609,7 @@
                         edgePullActive = false
                         _ = pressedControl?.handle(.cancelled)
                         pressedControl = nil
+                        scrollTracker.cancel()
                         self.scrollDecelerationTask?.cancel()
                         self.scrollDecelerationTask = nil
                         self.lastScrollTimestamp = nil
@@ -640,6 +661,25 @@
                 if let found = findScrollNode(in: child) { return found }
             }
             return nil
+        }
+
+        /// Nested-scroll arbitration candidates at `point`, innermost first. Falls back to the
+        /// single whole-tree `findScrollNode(in:)` lookup when hit-testing finds nothing — most
+        /// commonly because the tree hasn't completed its first (async) layout pass yet and no
+        /// node has a `calculatedFrame`. Without this fallback a gesture that starts before the
+        /// first layout pass finishes would silently scroll nothing.
+        private static func scrollCandidates(in node: Node, at point: LayoutPoint) -> [ScrollNode] {
+            let hitTested = NestedScrollArbiter.scrollAncestors(in: node, at: point)
+            guard hitTested.isEmpty else { return hitTested }
+            // An empty result is the *correct* answer for a touch that's legitimately outside
+            // every ScrollNode (e.g. a tap on a tab bar) — falling back there would let an
+            // unrelated, possibly-scrollable node steal the gesture based on tree order alone,
+            // nothing to do with where the touch actually was. Only fall back when the tree
+            // hasn't had its first real layout pass at all yet (`node`, the root, has no frame),
+            // which is the specific case this fallback exists for: a gesture arriving before
+            // `calculatedFrame` exists anywhere, so hit-testing can't answer honestly either way.
+            guard node.calculatedFrame == nil else { return [] }
+            return [findScrollNode(in: node)].compactMap { $0 }
         }
 
         /// Hit-tests a point and walks up from the leaf hit to the nearest control-input target.
