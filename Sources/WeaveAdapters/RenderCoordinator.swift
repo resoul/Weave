@@ -291,12 +291,16 @@ public final class RenderCoordinator {
             return
         }
 
+        // The result being committed no longer owns `currentRequest`. Applying it may
+        // synchronously invalidate layout (virtualized views do this after materializing their
+        // first window), and that reentrant invalidation must remain the active next request.
+        currentRequest = nil
+
         // Synchronous coherent commit on MainActor without await
         root.applyRecursively(result)
         onCommitGeometry?(result, request)
         lastCommittedRequest = request
         lastCommittedResult = result
-        currentRequest = nil
         committedCount += 1
 
         let transaction = DisplayTransaction(

@@ -349,6 +349,40 @@
             #expect(coordinator.lastCommittedRequest?.bounds.width == 300)
             #expect(node.calculatedFrame?.width == 300)
         }
+
+        @Test
+        @MainActor
+        func reentrantInvalidationDuringLayoutApplyKeepsNextGeneration() async {
+            let list = ListView<Int, Int>(itemID: { $0 }) { _, _ in
+                Node().style {
+                    $0.width = .fraction(1)
+                    $0.height = .points(20)
+                }
+            }
+            list.estimatedItemLength = 20
+            list.updateItems(Array(0..<100))
+
+            let coordinator = RenderCoordinator()
+            coordinator.mount(root: list)
+            let bounds = LayoutFrame(width: 300, height: 200)
+            list.onInvalidate = { [weak list, weak coordinator] _ in
+                guard let list, let coordinator else { return }
+                coordinator.invalidate(root: list, bounds: bounds, scale: 1)
+            }
+
+            coordinator.invalidate(root: list, bounds: bounds, scale: 1)
+
+            // Commit 1 establishes the viewport and materializes cells. That mutation requests
+            // commit 2 from inside `applyRecursively`, which lays out the new cell subtree.
+            for _ in 0..<200 where coordinator.committedCount < 2 {
+                await Task.yield()
+            }
+
+            #expect(coordinator.committedCount >= 2)
+            #expect(coordinator.currentRequest == nil)
+            #expect(!list.subnodes.isEmpty)
+            #expect(list.subnodes.allSatisfy { $0.calculatedFrame?.width == 300 })
+        }
     }
 
     @Suite("DirectionAndScaleTests")

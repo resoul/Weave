@@ -138,6 +138,13 @@ public final class TableView<
     public func semanticRowLabel(for item: Item, context: ItemContext<ItemID>) -> String? {
         rowSemanticLabel?(item, context)
     }
+
+    /// Finishes `sortRequests` before the inherited `VirtualizedView`/`ScrollNode` teardown.
+    /// Ownership: no value escapes. Isolation: MainActor. Errors: none. Cancellation: idempotent.
+    public override func dispose() {
+        sortRequests.finish()
+        super.dispose()
+    }
 }
 
 private extension TableColumnWidth {

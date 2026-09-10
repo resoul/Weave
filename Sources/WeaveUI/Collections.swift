@@ -17,6 +17,24 @@ public struct ItemContext<ItemID: Hashable & Sendable>: Sendable, Hashable {
     }
 }
 
+/// Per-item UI state a collection captures just before a cell leaves the rendered window
+/// (recycle or dispose) and restores immediately after a cell is materialized or reconfigured
+/// for an item — so state like a nested collection's scroll offset survives virtualization and
+/// cell reuse instead of resetting every time an item scrolls back into view. Concrete and
+/// `Sendable` by design, not a type-erased payload: strict concurrency and the public API
+/// baseline both want a known shape here, and `nestedOffset` is the concrete need card 04/06
+/// exist for (a `CollectionCell`'s nested scroll position, or a `PageContainer` page's).
+/// Ownership: an immutable value copied into `KeyedItemStateStore`. Isolation: none. Errors: none. Cancellation: not applicable.
+public struct ItemPresentationState: Sendable, Hashable {
+    public var nestedOffset: LayoutPoint?
+
+    /// Creates a presentation state snapshot.
+    /// Ownership: values are copied. Isolation: none. Errors: none. Cancellation: not applicable.
+    public init(nestedOffset: LayoutPoint? = nil) {
+        self.nestedOffset = nestedOffset
+    }
+}
+
 /// Stable item in an immutable collection section.
 /// Ownership: the snapshot owns the item value. Isolation: none. Errors: duplicate IDs are diagnosed by the consumer. Cancellation: not applicable.
 public struct CollectionItem<ItemID: Hashable & Sendable, Item: Sendable>: Sendable {
@@ -307,29 +325,44 @@ public struct VirtualizationWindow: Sendable, Hashable {
     }
 }
 
-/// MainActor-owned bounded pool for reusable Node instances.
+/// MainActor-owned bounded pool for reusable Node instances, partitioned by reuse identifier so
+/// heterogeneous cell kinds (e.g. a text row vs. a media tile) never dequeue into each other.
 /// Ownership: the pool owns recycled nodes until dequeue or drain. Isolation: MainActor. Errors: missing reuse IDs return nil. Cancellation: drain disposes every pooled node.
 @MainActor
 public final class CellReusePool {
     private var storage: [String: [Node]] = [:]
+    private let limitPerIdentifier: Int
 
     /// Creates an empty pool.
-    /// Ownership: no nodes are retained. Isolation: MainActor. Errors: none. Cancellation: no work starts.
-    public init() {}
+    /// Ownership: no nodes are retained. Isolation: MainActor. Errors: `limitPerIdentifier` below 1 is treated as 1. Cancellation: no work starts.
+    public init(limitPerIdentifier: Int = 8) {
+        self.limitPerIdentifier = max(1, limitPerIdentifier)
+    }
 
-    /// Recycles a node after its owner has removed it from the tree.
-    /// Ownership: the pool retains the node. Isolation: MainActor. Errors: disposed nodes are ignored. Cancellation: reuse preparation is synchronous.
+    /// Recycles a node after its owner has removed it from the tree, under a given reuse
+    /// identifier's pool. A pool already at `limitPerIdentifier` disposes the node instead of
+    /// retaining it, so pool growth stays bounded under fast scroll.
+    /// Ownership: the pool retains the node, or disposes it if the identifier's pool is full. Isolation: MainActor. Errors: disposed nodes are ignored. Cancellation: reuse preparation is synchronous.
     public func recycle(_ node: Node, reuseID: String) {
         guard node.lifecycleState != .disposed else { return }
+        guard storage[reuseID, default: []].count < limitPerIdentifier else {
+            node.dispose()
+            return
+        }
         if let reusable = node as? any ReusableNode { reusable.prepareForReuse() }
         storage[reuseID, default: []].append(node)
     }
 
-    /// Dequeues the oldest node for a reuse ID.
+    /// Dequeues the most recently recycled node for a reuse identifier.
     /// Ownership: ownership transfers to the caller. Isolation: MainActor. Errors: no node returns nil. Cancellation: none.
     public func dequeue(reuseID: String) -> Node? { storage[reuseID]?.popLast() }
 
-    /// Disposes all retained nodes and clears the pool.
+    /// Number of nodes currently pooled under a reuse identifier. Introspection for tests and
+    /// in-app validation (see card 08's reuse measurement).
+    /// Ownership: the returned count does not transfer ownership. Isolation: MainActor. Errors: an unknown identifier returns 0. Cancellation: not applicable.
+    public func pooledCount(reuseID: String) -> Int { storage[reuseID]?.count ?? 0 }
+
+    /// Disposes all retained nodes, across every reuse identifier, and clears the pool.
     /// Ownership: the pool releases every node. Isolation: MainActor. Errors: none. Cancellation: pooled work is terminated by disposal.
     public func drain() {
         storage.values.flatMap { $0 }.forEach { $0.dispose() }
@@ -388,6 +421,11 @@ public final class KeyedItemStateStore<ItemID: Hashable & Sendable, State: Senda
         for id in Set(values.keys).subtracting(retained) { remove(id) }
         for id in Set(demands.keys).subtracting(retained) { remove(id) }
     }
+
+    /// Number of IDs currently holding state. Introspection for tests and bounded-growth
+    /// validation (see card 08's memory measurement).
+    /// Ownership: the returned count does not transfer ownership. Isolation: MainActor. Errors: none. Cancellation: not applicable.
+    public var count: Int { values.count }
 }
 
 /// Cancellable owner token for one keyed item demand.
@@ -519,10 +557,34 @@ open class VirtualizedView<Item: Sendable, ItemID: Hashable & Sendable>: ScrollN
     public var reuseIdentifier: (@MainActor (Item) -> String)?
     public var configureReusedCell: (@MainActor (Node, Item, ItemContext<ItemID>) -> Bool)?
     public let reusePool: CellReusePool
+    /// Per-item presentation state (e.g. a hosted `CollectionCell`'s nested scroll offset),
+    /// keyed by stable item ID and pruned to the live item set on every `updateItems`/
+    /// `updateSnapshot`. Exposed so a caller can also register `beginDemand(for:onCancel:)`
+    /// against the same IDs `captureItemState`/`restoreItemState` key their state by.
+    public let itemState = KeyedItemStateStore<ItemID, ItemPresentationState>()
+    /// Captured just before a cell is recycled or disposed. Runs synchronously inside the same
+    /// update that removes the cell.
+    public var captureItemState: (@MainActor (Node, ItemContext<ItemID>) -> ItemPresentationState?)?
+    /// Applied immediately after a cell is materialized or reconfigured for an item — before the
+    /// cell is returned to the reconciler, so restoration is visible on the first rendered frame.
+    public var restoreItemState:
+        (@MainActor (Node, ItemContext<ItemID>, ItemPresentationState) -> Void)?
     public private(set) var virtualizationWindow = VirtualizationWindow(
         visibleRange: 0..<0, renderedRange: 0..<0)
     public private(set) var sectionCount: Int = 0
     public var sectionHeader: (@MainActor (Int) -> Node?)?
+    /// Pins the section currently crossing the leading edge's header at that edge; the next
+    /// section's header pushes it out as its own leading edge approaches. Default `false`
+    /// preserves ordinary in-flow header layout — headers still materialize interleaved with
+    /// their section's items (see `updateRenderedWindow`), just with no position override.
+    /// Ownership: no value escapes. Isolation: MainActor. Errors: none. Cancellation: turning this off clears `pinnedSectionIndex` on the next `updateRenderedWindow()`.
+    public var pinsSectionHeaders: Bool = false
+    /// The section index whose header is currently pinned to the leading edge, or `nil` when
+    /// `pinsSectionHeaders` is `false` or the scroll position is before the first section.
+    public private(set) var pinnedSectionIndex: Int?
+    /// Number of measured item extents currently retained. Introspection for tests validating
+    /// that `measuredLengths` is pruned alongside removed items rather than growing unbounded.
+    public var measuredLengthCount: Int { measuredLengths.count }
 
     private let itemID: @MainActor (Item) -> ItemID
     private let cell: @MainActor (Item, ItemContext<ItemID>) -> Node
@@ -530,6 +592,14 @@ open class VirtualizedView<Item: Sendable, ItemID: Hashable & Sendable>: ScrollN
     private var itemsByKey: [String: (item: Item, id: ItemID, index: Int, sectionIndex: Int)] = [:]
     private var headerByKey: [String: Int] = [:]
     private var measuredLengths: [String: Double] = [:]
+    /// Reuse-pool identifier a materialized cell was built or reconfigured under, recovered at
+    /// recycle time since the removed node no longer carries its originating item. Only item
+    /// cells are tagged; headers and spacers are never pooled and are always disposed on removal.
+    private var reusePoolKeys: [ObjectIdentifier: String] = [:]
+    /// Item context a materialized cell was built or reconfigured for, recovered at recycle time
+    /// so `captureItemState` can be called with the item it belongs to even though the node
+    /// itself carries no back-reference to it.
+    private var materializedContext: [ObjectIdentifier: ItemContext<ItemID>] = [:]
     private var swipeRevealItemID: ItemID?
     private var swipeRevealEdge: SwipeEdge?
     private var swipeRevealStartOffset: Double = 0
@@ -553,7 +623,16 @@ open class VirtualizedView<Item: Sendable, ItemID: Hashable & Sendable>: ScrollN
         swipeActionInvocations = ActionPipe(capacity: 32)
         swipeRevealChanges = ActionPipe(capacity: 32)
         reusePool = CellReusePool()
-        super.init(axis: axis, style: style, environment: environment)
+        var draft = LayoutStyle.Draft(style)
+        switch axis {
+        case .vertical:
+            draft.flexDirection = .column
+        case .horizontal:
+            draft.flexDirection = .row
+        case .both:
+            break
+        }
+        super.init(axis: axis, style: LayoutStyle.bake(draft), environment: environment)
     }
 
     /// Replaces items and computes a new stable-ID render window.
@@ -584,6 +663,7 @@ open class VirtualizedView<Item: Sendable, ItemID: Hashable & Sendable>: ScrollN
                 updateRenderedWindow()
             }
         }
+        pruneItemScopedState()
     }
 
     /// Replaces items from a stable-ID section snapshot and retains section context.
@@ -610,6 +690,20 @@ open class VirtualizedView<Item: Sendable, ItemID: Hashable & Sendable>: ScrollN
         items = flattened
         contentState = isLoading ? .loading : (flattened.isEmpty ? .empty : .ready)
         updateRenderedWindow()
+        pruneItemScopedState()
+    }
+
+    /// Drops `itemState` entries (and any `beginDemand` registered against them) and
+    /// `measuredLengths` entries for IDs no longer in the current item set. Called once per
+    /// `updateItems`/`updateSnapshot`, after the departing window's cells have already had a
+    /// chance to capture state during recycle — so a capture that just landed for a genuinely
+    /// removed item is pruned in the same pass rather than lingering until the next update.
+    /// Ownership: no value escapes. Isolation: MainActor. Errors: none. Cancellation: pruned demands are cancelled by `KeyedItemStateStore.retainOnly`.
+    private func pruneItemScopedState() {
+        itemState.retainOnly(itemIDs)
+        guard !measuredLengths.isEmpty else { return }
+        let liveKeys = Set(itemIDs.map { String(reflecting: $0) })
+        measuredLengths = measuredLengths.filter { liveKeys.contains($0.key) }
     }
 
     /// Commits a measured item length while preserving the leading scroll anchor.
@@ -966,38 +1060,67 @@ open class VirtualizedView<Item: Sendable, ItemID: Hashable & Sendable>: ScrollN
             estimatedItemLength: estimatedItemLength + itemGap,
             itemLengths: indexedLengths,
             overscanFactor: overscanFactor)
-        let descriptors = Array(virtualizationWindow.renderedRange).compactMap {
-            index -> NodeDescriptor? in
-            guard itemIDs.indices.contains(index) else { return nil }
-            return NodeDescriptor(
-                typeName: "VirtualizedCell", key: String(reflecting: itemIDs[index]))
-        }
-        var allDescriptors = descriptors
         let leadingContentOffset = contentOffset(
             before: virtualizationWindow.renderedRange.lowerBound)
         let leadingSpacerLength = max(0, leadingContentOffset - itemGap)
+        var allDescriptors: [NodeDescriptor] = []
         if leadingSpacerLength > 0 {
-            allDescriptors.insert(
+            allDescriptors.append(
                 NodeDescriptor(
                     typeName: "VirtualizedLeadingSpacer",
                     key:
                         "virtualized-leading-spacer:\(virtualizationWindow.renderedRange.lowerBound):\(leadingSpacerLength)"
-                ),
-                at: 0
+                )
             )
         }
-        if sectionHeader != nil {
-            let sections = Set(
-                virtualizationWindow.renderedRange.compactMap { index -> Int? in
-                    guard itemIDs.indices.contains(index),
-                        let record = itemsByKey[String(reflecting: itemIDs[index])]
-                    else { return nil }
-                    return record.sectionIndex
-                })
-            for sectionIndex in sections.sorted().reversed() {
-                allDescriptors.insert(
-                    NodeDescriptor(typeName: "SectionHeader", key: "header:\(sectionIndex)"), at: 0)
+        // Headers are interleaved with their section's items in flow order (header, then that
+        // section's items, then the next section's header, ...) rather than all batched before
+        // the rendered window — the latter would leave `contentOffset`/the leading spacer
+        // accounting for header extents that never actually occupied the position the spacer math
+        // assumed. `lastSection` seeds from whatever section precedes the window's first rendered
+        // item, so a window that starts mid-section does not re-materialize a header that already
+        // appeared earlier, off-window.
+        var lastSection: Int?
+        if let firstRenderedIndex = virtualizationWindow.renderedRange.first,
+            itemIDs.indices.contains(firstRenderedIndex), firstRenderedIndex > 0,
+            let previousRecord = itemsByKey[String(reflecting: itemIDs[firstRenderedIndex - 1])]
+        {
+            lastSection = previousRecord.sectionIndex
+        }
+        var naturallyRenderedSections: Set<Int> = []
+        for index in virtualizationWindow.renderedRange {
+            guard itemIDs.indices.contains(index) else { continue }
+            let id = itemIDs[index]
+            let key = String(reflecting: id)
+            guard let record = itemsByKey[key] else { continue }
+            if sectionHeader != nil, record.sectionIndex != lastSection {
+                allDescriptors.append(
+                    NodeDescriptor(
+                        typeName: "SectionHeader", key: "header:\(record.sectionIndex)"))
+                naturallyRenderedSections.insert(record.sectionIndex)
+                lastSection = record.sectionIndex
             }
+            allDescriptors.append(NodeDescriptor(typeName: "VirtualizedCell", key: key))
+        }
+        // Pinning can require a header whose section has scrolled entirely out of the rendered
+        // window (a long section, scrolled deep into). Resolved here so the descriptor list —
+        // and therefore the reconciler diff — includes it; positioned as an overlay below since
+        // its natural flow slot already contributed to `leadingSpacerLength` above.
+        var forcedPinnedHeaderKey: String?
+        if pinsSectionHeaders, sectionHeader != nil {
+            let leadingScrollOffset = offset
+            let starts = sectionStartOffsets()
+            pinnedSectionIndex =
+                starts.filter { $0.value <= leadingScrollOffset }
+                .max(by: { $0.value < $1.value })?.key
+            if let pinnedSectionIndex, !naturallyRenderedSections.contains(pinnedSectionIndex) {
+                let headerKey = "header:\(pinnedSectionIndex)"
+                allDescriptors.insert(
+                    NodeDescriptor(typeName: "SectionHeader", key: headerKey), at: 0)
+                forcedPinnedHeaderKey = headerKey
+            }
+        } else {
+            pinnedSectionIndex = nil
         }
         _ = reconciler.apply(to: self, descriptors: allDescriptors, generation: state.revision) {
             [self] descriptor in
@@ -1012,30 +1135,118 @@ open class VirtualizedView<Item: Sendable, ItemID: Hashable & Sendable>: ScrollN
                 return spacer
             }
             if key.hasPrefix("header:"), let sectionIndex = Int(key.dropFirst(7)) {
-                return self.sectionHeader?(sectionIndex) ?? Node()
+                let header = self.sectionHeader?(sectionIndex) ?? Node()
+                // A header materialized only because it's pinned, but whose section is outside
+                // the rendered window, takes no flow space — its natural slot is already
+                // reserved by the leading spacer above, so letting it *also* participate in flow
+                // would double-count that space and push the rendered window's real content down.
+                if key == forcedPinnedHeaderKey {
+                    var draft = LayoutStyle.Draft(header.style)
+                    draft.positionType = .absolute
+                    header.style = LayoutStyle.bake(draft)
+                }
+                return header
             }
             guard let record = itemsByKey[key] else { return Node() }
             let context = ItemContext(
                 itemID: record.id, index: record.index, sectionIndex: record.sectionIndex)
+            let poolKey = reuseIdentifier?(record.item) ?? "VirtualizedCell"
+            let resultNode: Node
             if let configureReusedCell,
-                let reused = reusePool.dequeue(reuseID: "VirtualizedCell"),
+                let reused = reusePool.dequeue(reuseID: poolKey),
                 configureReusedCell(reused, record.item, context)
             {
-                return prepareVirtualizedCell(reused)
+                resultNode = prepareVirtualizedCell(reused)
+            } else {
+                resultNode = prepareVirtualizedCell(cell(record.item, context))
             }
-            return prepareVirtualizedCell(cell(record.item, context))
+            reusePoolKeys[ObjectIdentifier(resultNode)] = poolKey
+            materializedContext[ObjectIdentifier(resultNode)] = context
+            if let restoreItemState, let restored = itemState.state(for: record.id) {
+                restoreItemState(resultNode, context, restored)
+            }
+            return resultNode
         } recycle: { [self] node in
-            guard configureReusedCell != nil, node is any ReusableNode else {
+            if let captureItemState, let context = materializedContext[ObjectIdentifier(node)],
+                let captured = captureItemState(node, context)
+            {
+                itemState.setState(captured, for: context.itemID)
+            }
+            materializedContext.removeValue(forKey: ObjectIdentifier(node))
+            guard let poolKey = reusePoolKeys.removeValue(forKey: ObjectIdentifier(node)),
+                configureReusedCell != nil, node is any ReusableNode
+            else {
                 node.dispose()
                 return
             }
-            reusePool.recycle(node, reuseID: "VirtualizedCell")
+            reusePool.recycle(node, reuseID: poolKey)
+        }
+        if pinsSectionHeaders, sectionHeader != nil {
+            applyPinnedHeaderFrames(scrollOffset: offset)
         }
         let prefetch = virtualizationWindow.renderedRange.compactMap {
             itemIDs.indices.contains($0) ? itemIDs[$0] : nil
         }
         if !prefetch.isEmpty { _ = prefetchRequests.send(prefetch) }
         if let focusedItemID, !itemIDs.contains(focusedItemID) { self.focusedItemID = nil }
+    }
+
+    /// Explicitly frames every currently-materialized section header: the pinned one gets its
+    /// leading-edge-clamped, push-out-aware position; every other header gets its natural flow
+    /// position re-asserted (undoing a pin override from a prior call, since nothing else resets
+    /// it once `apply(_:)` has overridden a node's `calculatedFrame`). Called once per
+    /// `updateRenderedWindow()` when `pinsSectionHeaders` is on; a no-op set of headers is cheap
+    /// (at most one pinned plus the rendered window's own, per the bounded-materialization
+    /// invariant this card requires).
+    /// Ownership: no value escapes. Isolation: MainActor. Errors: a header without a computable section start (stale/unmeasured) is left untouched. Cancellation: not applicable.
+    private func applyPinnedHeaderFrames(scrollOffset: Double) {
+        let starts = sectionStartOffsets()
+        let crossLength = axis == .horizontal ? state.viewportSize.height : state.viewportSize.width
+        for child in subnodes {
+            guard let key = child.reconciliationDescriptor?.key, key.hasPrefix("header:"),
+                let sectionIndex = Int(key.dropFirst(7)),
+                let naturalStart = starts[sectionIndex]
+            else { continue }
+            let headerLength = measuredLengths[key] ?? estimatedItemLength
+            var mainOrigin = naturalStart
+            if sectionIndex == pinnedSectionIndex {
+                mainOrigin = max(naturalStart, scrollOffset)
+                if let nextStart = starts[sectionIndex + 1] {
+                    mainOrigin = min(mainOrigin, nextStart - headerLength)
+                }
+            }
+            let frame: LayoutFrame =
+                axis == .horizontal
+                ? LayoutFrame(
+                    origin: LayoutPoint(x: mainOrigin, y: 0), width: headerLength,
+                    height: crossLength)
+                : LayoutFrame(
+                    origin: LayoutPoint(x: 0, y: mainOrigin), width: crossLength,
+                    height: headerLength)
+            child.apply(
+                LayoutResult(
+                    placements: [LayoutPlacement(identity: child.id, frame: frame)],
+                    treeIdentity: child.id, environmentRevision: 0, contentRevision: 0))
+        }
+    }
+
+    /// Disposes the view: finishes every bounded pipe this class owns (beyond the ones
+    /// `ScrollNode.dispose()` already finishes), drains the reuse pool — pooled-but-detached
+    /// nodes are not `children` and would otherwise never be disposed — then disposes the
+    /// materialized cell tree via `super.dispose()`.
+    /// Ownership: no value escapes. Isolation: MainActor. Errors: none. Cancellation: idempotent; a second call is a no-op via `LifecycleMachine`.
+    open override func dispose() {
+        reusePool.drain()
+        reusePoolKeys.removeAll()
+        materializedContext.removeAll()
+        itemState.retainOnly([ItemID]())
+        selectionChanges.finish()
+        refreshRequests.finish()
+        prefetchRequests.finish()
+        contextMenuRequests.finish()
+        swipeActionInvocations.finish()
+        swipeRevealChanges.finish()
+        super.dispose()
     }
 
     open override func didApplyLayoutResult(_ result: LayoutResult) {
@@ -1045,10 +1256,15 @@ open class VirtualizedView<Item: Sendable, ItemID: Hashable & Sendable>: ScrollN
             frame.height > 0,
             state.viewportSize.width != frame.width || state.viewportSize.height != frame.height
         {
-            let contentLength = totalContentLength(viewportLength: frame.height)
+            let viewportLength = axis == .horizontal ? frame.width : frame.height
+            let contentLength = totalContentLength(viewportLength: viewportLength)
+            let contentSize =
+                axis == .horizontal
+                ? MeasuredSize(width: contentLength, height: frame.height)
+                : MeasuredSize(width: frame.width, height: contentLength)
             updateViewport(
                 viewportSize: MeasuredSize(width: frame.width, height: frame.height),
-                contentSize: MeasuredSize(width: frame.width, height: contentLength)
+                contentSize: contentSize
             )
             updateRenderedWindow()
         }
@@ -1057,7 +1273,9 @@ open class VirtualizedView<Item: Sendable, ItemID: Hashable & Sendable>: ScrollN
             guard let frame = child.calculatedFrame else { continue }
             let length = axis == .horizontal ? frame.width : frame.height
             guard length > 0, length.isFinite else { continue }
-            guard let key = child.reconciliationDescriptor?.key, itemsByKey[key] != nil else {
+            guard let key = child.reconciliationDescriptor?.key,
+                itemsByKey[key] != nil || key.hasPrefix("header:")
+            else {
                 continue
             }
             if measuredLengths[key] != length {
@@ -1078,21 +1296,55 @@ open class VirtualizedView<Item: Sendable, ItemID: Hashable & Sendable>: ScrollN
         }
     }
 
-    private func totalContentLength(viewportLength: Double) -> Double {
-        let total = itemIDs.enumerated().reduce(0.0) { partial, entry in
-            partial + (measuredLengths[String(reflecting: entry.element)] ?? estimatedItemLength)
+    /// Cumulative flow length (section headers, when `sectionHeader` is set, plus items) up to
+    /// but not including item index `index`, and the leading flow offset of each section's header
+    /// encountered along the way — one walk instead of two, since both figures come from the same
+    /// per-item accounting and `pinsSectionHeaders` needs the per-section offsets on every scroll.
+    /// `measuredLengths` is the single source for both header and item extents (headers are keyed
+    /// `"header:<sectionIndex>"`, matching their materialization key) — there is no second
+    /// measurement source. O(n) in `itemIDs.count`; acceptable at today's scale, flagged as a
+    /// scaling concern for very large sectioned lists (see card 08's measurement pass).
+    /// Ownership: the returned dictionary is caller-owned. Isolation: MainActor. Errors: an out-of-range `index` clamps to the item count. Cancellation: not applicable.
+    private func flowMetrics(uptoItemIndex index: Int) -> (
+        length: Double, sectionStarts: [Int: Double]
+    ) {
+        let end = min(max(0, index), itemIDs.count)
+        var sectionStarts: [Int: Double] = [:]
+        guard end > 0 else { return (0, sectionStarts) }
+        let gap = max(0, style.gap)
+        var cursor = 0.0
+        var lastSection: Int?
+        for i in 0..<end {
+            let id = itemIDs[i]
+            guard let record = itemsByKey[String(reflecting: id)] else { continue }
+            if sectionHeader != nil, record.sectionIndex != lastSection {
+                sectionStarts[record.sectionIndex] = cursor
+                let headerKey = "header:\(record.sectionIndex)"
+                cursor += (measuredLengths[headerKey] ?? estimatedItemLength) + gap
+                lastSection = record.sectionIndex
+            }
+            let isLastOverall = i == itemIDs.count - 1
+            cursor +=
+                (measuredLengths[String(reflecting: id)] ?? estimatedItemLength)
+                + (isLastOverall ? 0 : gap)
         }
-        let gaps = max(0, style.gap) * Double(max(0, itemIDs.count - 1))
-        return max(viewportLength, total + gaps)
+        return (cursor, sectionStarts)
+    }
+
+    private func totalContentLength(viewportLength: Double) -> Double {
+        max(viewportLength, flowMetrics(uptoItemIndex: itemIDs.count).length)
     }
 
     private func contentOffset(before index: Int) -> Double {
-        let end = min(max(0, index), itemIDs.count)
-        guard end > 0 else { return 0 }
-        let lengths = itemIDs[..<end].reduce(0.0) { partial, id in
-            partial + (measuredLengths[String(reflecting: id)] ?? estimatedItemLength)
-        }
-        return lengths + max(0, style.gap) * Double(end)
+        flowMetrics(uptoItemIndex: index).length
+    }
+
+    /// Leading flow offset of every section's header, keyed by section index, across the whole
+    /// item list — not just the rendered window, since pinning needs to know which section the
+    /// current scroll position falls into even when that section's own header has scrolled far
+    /// out of the rendered range.
+    private func sectionStartOffsets() -> [Int: Double] {
+        flowMetrics(uptoItemIndex: itemIDs.count).sectionStarts
     }
 
     /// A scroll-axis item keeps its measured extent even when the materialized window is larger
@@ -1186,5 +1438,71 @@ public final class CollectionView<Item: Sendable, ItemID: Hashable & Sendable>: 
         environment: EnvironmentScope? = nil
     ) {
         super.init(axis: axis, itemID: itemID, cell: cell, style: style, environment: environment)
+    }
+}
+
+/// A cell that hosts a nested collection with a fixed extent along the host axis.
+///
+/// This is the hosting contract a collection needs to be valid as a cell of another collection:
+/// - the nested collection declares a **fixed** extent along the outer (host) axis, so the host's
+///   own virtualization — which reads this cell's `calculatedFrame` into `measuredLengths`
+///   (`VirtualizedView.didApplyLayoutResult`) — sees a stable input every pass instead of a value
+///   that depends on the nested collection's own, possibly still-growing, content;
+/// - the nested collection fills this cell along its own scroll axis and remains free to scroll
+///   and virtualize independently there;
+/// - `prepareForReuse()` clears nested items and resets the nested scroll offset to the origin,
+///   so a pooled cell never shows a previous row's content or scroll position;
+/// - `dispose()` (inherited from `Node`, reaching `content` as a child) disposes the nested
+///   collection, which itself now finishes its own pipes and drains its own reuse pool
+///   (`VirtualizedView.dispose()`).
+///
+/// Nesting is supported one level deep: `content` hosting a further `CollectionCell` of its own
+/// is unsupported and untested. This type does not retain the outer collection that materializes
+/// it — the outer's `cell` factory closure owns the only reference in that direction, so no
+/// retain cycle is introduced by using this type as intended.
+/// Ownership: the cell owns `content` as its sole child. Isolation: MainActor. Errors: a non-finite or negative `extent` normalizes to zero. Cancellation: disposal cancels the nested collection's work.
+@MainActor
+public final class CollectionCell<Item: Sendable, ItemID: Hashable & Sendable>: Node, ReusableNode {
+    public let content: VirtualizedView<Item, ItemID>
+    private let hostAxis: ScrollAxis
+
+    /// Creates a hosting cell with a nested collection sized to fill it.
+    /// Ownership: the cell takes ownership of `content` as a child node. Isolation: MainActor. Errors: none. Cancellation: no work starts.
+    public init(
+        content: VirtualizedView<Item, ItemID>,
+        hostAxis: ScrollAxis,
+        extent: Double,
+        environment: EnvironmentScope? = nil
+    ) {
+        self.content = content
+        self.hostAxis = hostAxis
+        let normalizedExtent = max(0, extent.isFinite ? extent : 0)
+        var draft = LayoutStyle.Draft(LayoutStyle())
+        switch hostAxis {
+        case .horizontal:
+            draft.width = .points(normalizedExtent)
+            draft.height = .fraction(1)
+        case .vertical, .both:
+            draft.height = .points(normalizedExtent)
+            draft.width = .fraction(1)
+        }
+        draft.flexShrink = 0
+        super.init(style: LayoutStyle.bake(draft), environment: environment)
+        var contentDraft = LayoutStyle.Draft(content.style)
+        contentDraft.width = .fraction(1)
+        contentDraft.height = .fraction(1)
+        contentDraft.flexShrink = 0
+        content.style = LayoutStyle.bake(contentDraft)
+        addSubnode(content)
+    }
+
+    /// Resets the boundary a pooled cell must cross before reuse: nested items are cleared and
+    /// the nested scroll offset returns to the origin. Called by the reuse pool via
+    /// `CellReusePool.recycle` before this cell is dequeued for a different row.
+    /// Ownership: no value escapes. Isolation: MainActor. Errors: none. Cancellation: not applicable.
+    public func prepareForReuse() {
+        content.updateItems([])
+        _ = content.scroll(.to(LayoutPoint(x: 0, y: 0)))
+        content.deselectAll()
     }
 }
